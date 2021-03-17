@@ -1,0 +1,75 @@
+#!/bin/ash -vx
+#
+# Copyright (c) 2011 Citrix Systems, Inc.
+# 
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+# 
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+#
+
+. stages/functions
+
+. ${DISK_CONF}
+# ^^^ defines ${TARGET_DISK}
+
+# Answerfile tags:
+#
+# <install-pba>true</install-pba>
+# <install-pba>auto</install-pba>
+# <install-pba>false</install-pba>
+# <install-pba><install-pba>
+
+pba_dialog()
+{
+sleep 3
+dialog --defaultno --colors --yes-label Install --no-label Skip --yesno "
+  Do you have want to install \ZbPBA Partition \ZB
+    " 7 60
+OPT=$?
+[ "$OPT" != "0" ]   || return 1
+[ "$OPT" != "1" ]   || return 0
+}
+
+not_previous || exit ${Previous}
+
+if answerfile_specifies "install-pba" ; then
+    INSTALL_PBA=$(read_xml_tag "${ANSWERFILE}" "install-pba")
+
+    case "${INSTALL_PBA}" in
+        true|false)
+            ;;
+
+        *)
+            echo "ERROR: Answerfile specifies unknown value '${INSTALL_PBA}'" \
+                 "for <install-pba> tag defaulting to ${INSTALL_PBA}" >&2
+            INSTALL_PBA=false
+    esac
+elif interactive ; then
+    if pba_dialog ; then
+        INSTALL_PBA="false"
+    else
+        INSTALL_PBA="true"
+    fi
+
+else
+      not_previous || exit ${Previous}
+      INSTALL_PBA=false
+
+      echo "Answerfile does not specify pba: defaulting" \
+             "to '${INSTALL_PBA}'." >&2
+fi
+
+
+echo "INSTALL_PBA='${INSTALL_PBA}'" > ${PBA_CONF}
+
+exit ${Continue}

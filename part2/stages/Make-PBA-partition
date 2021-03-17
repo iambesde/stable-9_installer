@@ -1,0 +1,98 @@
+#!/bin/ash -vx
+#
+# Copyright (c) 2013 Citrix Systems, Inc.
+# 
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+# 
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+#
+
+. stages/functions
+. ${DISK_CONF}
+. ${PARTITION_CONF}
+. ${PBA_CONF}
+. ${SCRIPT_DIR}/Functions/install-main
+
+create_pba_partitions()
+{
+    local PARTITION="${PBA_PARTITION}"
+    local DISK=$(get_partition_disk "${PARTITION}")
+    local PARTITION_NUM=$(get_partition_number "${PARTITION}")
+    local NODE=$(get_partition_node "${PARTITION}")
+    local DISK_DEV="/dev/${DISK}"
+    local PARTITION_CODE_DEV="/dev/${NODE}"
+    local PARTITION_DB_DEV="${DISK_DEV}`expr ${PARTITION_NUM} + 1`"
+    local BOOT_FLAG_BIT="2"
+    local DISK=$(get_partition_disk "${PARTITION}")
+    local DISK_DEV="/dev/${DISK}"
+
+    local PBA_CODE_PARTNUM="3"
+    local PBA_DATA_PARTNUM="4"
+    local PBA_CODE_SIZE="+133M"  # 1 MiB
+    local PBA_DATA_SIZE="+68M"  # 1 MiB
+    local PBA_TYPE="EF00" # PBA Partition Typecode
+    local PBA_DBTYPE="EB00" # PBA DB Partition Typecode
+
+
+    # Create the PBA code partitions
+    if ! do_cmd sgdisk -g -n ${PBA_CODE_PARTNUM}::${PBA_CODE_SIZE} -t ${PBA_CODE_PARTNUM}:${PBA_TYPE} "${DISK_DEV}" >&2 ; then
+        echo "ERROR: Could not create PBA Code Partition." >&2
+        return 1
+    fi
+    do_cmd sgdisk -c ${PBA_CODE_PARTNUM}:PBA_CODE "${DISK_DEV}" >&2
+    # Create the PBA data partitions
+    if ! do_cmd sgdisk -g -n ${PBA_DATA_PARTNUM}::${PBA_DATA_SIZE} -t ${PBA_DATA_PARTNUM}:${PBA_DBTYPE} "${DISK_DEV}" >&2 ; then
+        echo "ERROR: Could not create PBA Data Partition." >&2
+        return 1
+    fi
+    do_cmd sgdisk -c ${PBA_DATA_PARTNUM}:PBA_DB "${DISK_DEV}" >&2
+
+    mixedgauge "Activating PBA disk partition..." 15
+                                                                                                                                         
+    # Set the legacy boot flag attribute 
+    # This is likely not needed for a GPT-based disk, but a small portion of BIOS's will
+    # refuse to boot if it is not set
+    do_cmd sgdisk -A ${PARTITION_NUM}:set:${BOOT_FLAG_BIT} "${DISK_DEV}" >&2
+
+    # Set the active boot flag for the protective MBR if in legacy mode
+    # Some BIOSes will refuse to use a GPT scheme on legacy boot without it
+    # Note that setting this flag will prevent the disk from booting in UEFI mode
+    if [[ ! -e /sys/firmware/efi ]] ; then
+        do_cmd parted -s "${DISK_DEV}" disk_set pmbr_boot on
+    else
+        do_cmd parted -s "${DISK_DEV}" disk_set pmbr_boot off
+    fi
+
+    echo "New partition layout:" >&2
+    gdisk -l "${DISK_DEV}" >&2
+
+
+    echo "Writing the PBA_CODE to ${PARTITION_DEV}:" >&2
+    do_cmd dd if=/dev/zero of="${PARTITION_CODE_DEV}" bs=133152256 count=1
+    do_cmd dd if=/install/part2/LINUX_PBA.img  skip=2048 of="${PARTITION_CODE_DEV}" 
+    do_cmd sync
+    echo "Writing the PBA_DB to ${PARTITION_DEV}:" >&2
+    do_cmd dd if=/install/part2/PBA_DB.img of="${PARTITION_DB_DEV}" 
+    do_cmd sync
+
+    return 0
+}
+    if [ "${INSTALL_PBA}" = "true" ] ; then
+        mixedgauge "Installing PBA..." 95
+        DISK_DEV="/dev/${TARGET_DISK}"
+	create_pba_partitions
+    else
+	exit ${Continue}
+    fi
+
+exit ${Continue}
