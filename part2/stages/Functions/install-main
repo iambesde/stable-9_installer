@@ -1,4 +1,4 @@
-#!/bin/ash
+#!/bin/ash -vx
 #
 # Copyright (c) 2014 Citrix Systems, Inc.
 # 
@@ -189,6 +189,7 @@ install_dom0()
     local ROOTFS_TYPE="$2"
 
     local config_lv=/dev/xenclient/config
+    local storage_lv=/dev/xenclient/storage
 
     mixedgauge "Creating disk volumes..." ${PERCENT}
     # Genereally PERCENT=10 and next phase will jump to 50, going in 5% increments
@@ -207,9 +208,9 @@ install_dom0()
     # Setup rootfs first
     write_rootfs ${DOM0_ROOTFS} ${ROOTFS_TYPE} ${ROOT_DEV}.new >&2 || return 1
     do_cmd mke2fs -j /dev/xenclient/boot                       >&2 || return 1
-    do_cmd mkfs.ext4 -N 65536 -q /dev/xenclient/storage        >&2 || return 1
+     
     do_cmd tune2fs -i 0 -c -1 -m 0 /dev/xenclient/boot         >&2 || return 1
-    do_cmd tune2fs -i 0 -c -1 -m 0 /dev/xenclient/storage      >&2 || return 1
+    
     mount_dom0 "${ROOT_DEV}.new" || return 1
 
     mixedgauge "Obtaining recovery key..." ${PERCENT}
@@ -226,17 +227,27 @@ install_dom0()
     set -x
 
     #
-    # config
+    # config and storage
     #
     cryptsetup -q -i 600 --cipher=aes-xts-plain64 luksFormat ${config_lv} ${RECOVERY_KEY} >&2 || {
         rm -f ${RECOVERY_KEY}
         set +x
         return 1
     }
+    cryptsetup -q -i 600 --cipher=aes-xts-plain64 luksFormat ${storage_lv} ${RECOVERY_KEY} >&2 || {
+        rm -f ${RECOVERY_KEY}
+        set +x
+        return 1
+    }
     local PLATFORM_KEY=$(gen_platform_key ${DOM0_MOUNT})
     set_platform_key ${RECOVERY_KEY} ${PLATFORM_KEY} ${config_lv}
+    set_platform_key ${RECOVERY_KEY} ${PLATFORM_KEY} ${storage_lv}
     # Open config lv.
     cryptsetup -q -d ${RECOVERY_KEY} luksOpen /dev/xenclient/config config >&2 || {
+        set +x
+        return 1
+    }
+    cryptsetup -q -d ${RECOVERY_KEY} luksOpen /dev/xenclient/storage storage >&2 || {
         set +x
         return 1
     }
@@ -256,6 +267,17 @@ install_dom0()
     # setup so keys can be written directly
     do_cmd mkdir -p -m 500 ${DOM0_MOUNT}/config/keys        >&2 || return 1
     do_cmd mkdir -p -m 500 ${DOM0_MOUNT}/config/sec         >&2 || return 1
+
+    # Formatting and mounting storage 
+    do_cmd mkfs.ext4 -N 65536 -q /dev/mapper/storage        >&2 || return 1
+    do_cmd tune2fs -i 0 -c -1 -m 0 /dev/mapper/storage      >&2 || return 1
+
+    # mount storage and copy dom0 /storage
+    do_mount /dev/mapper/storage ${TEMP_STORAGE_MOUNT}        >&2 || return 1
+    do_cmd rsync --archive --xattrs \
+        ${DOM0_MOUNT}/storage/ ${TEMP_STORAGE_MOUNT}          >&2 || return 1
+    do_mount --move ${TEMP_STORAGE_MOUNT} \
+        ${DOM0_MOUNT}/storage >&2 || return 1
 
     # prepare lvm directory to store lvm metadata backups.
     do_cmd mkdir -p -m 755 ${DOM0_MOUNT}/config/etc/lvm     >&2 || return 1
@@ -314,6 +336,8 @@ install_dom0()
         mixedgauge "Configuring Measured Launch... Press random keys to speed up the sealing process." ${PERCENT}
         PERCENT=$((PERCENT + 5))
         CONFIG_KEY=$(configure_measured_launch "${DOM0_MOUNT}" "${RECOVERY_KEY}" "${config_lv}") || return 1
+        STORAGE_KEY=$(configure_measured_launch "${DOM0_MOUNT}" "${RECOVERY_KEY}" "${storage_lv}") || return 1
+        write_pcrs "${DOM0_MOUNT}" || return 1
         mixedgauge "Keying material generated successfully..." ${PERCENT}
 
         quirk_fix "${DOM0_MOUNT}"
@@ -323,7 +347,7 @@ install_dom0()
         fi
     fi
 
-    finalize_keys "${RECOVERY_KEY}" "${PLATFORM_KEY}" "${CONFIG_KEY}" || return 1
+    finalize_keys "${RECOVERY_KEY}" "${PLATFORM_KEY}" "${CONFIG_KEY}" "${STORAGE_KEY}"|| return 1
 }
 
 # Minimal step to get the upgrade-compat rootfs unpacked
@@ -422,6 +446,10 @@ commit_dom0()
     do_cmd udevadm settle
 
     mount_dom0 "${ROOT_DEV}" || return 1
+    mount_storage || return 1
+        if is_mounted ${DOM0_MOUNT}/storage; then
+            echo "mount_dom0: ${DOM0_MOUNT}/storage is mounted" >&2
+        fi
 
     do_cmd mkdir -p ${DOM0_MOUNT}/storage/disks || return 1
 
@@ -472,15 +500,21 @@ seal_system() {
                 do_umount_all ${DOM0_MOUNT}
                 return 1
             }
+            mount_storage || {
+                echo "failed to mount storage" >&2
+                do_umount_all ${DOM0_MOUNT}
+                return 1
+            }
 
             if is_mounted ${DOM0_MOUNT}/config ; then
-                echo "seal_system: /config is mounted, forward sealing key" >&2
+              if is_mounted ${DOM0_MOUNT}/storage ; then
+                echo "seal_system: /config and /storage is mounted, forward sealing key" >&2
 
                 if [ "$(uname -m)" = "i686" ]; then
                     mount_upgrade_compat || return 1
-                    # Update config.pcrs in case it has changed
+                    # Update luks.pcrs in case it has changed
                     do_cmd chroot ${UPGRADE_MOUNT} \
-                        sh -c '. /usr/lib/openxt/ml-functions ; write_config_pcrs' >&2
+                        sh -c '. /usr/lib/openxt/ml-functions ; write_luks_pcrs' >&2
                     do_cmd /etc/init.d/trousers stop >&2
                     do_cmd chroot ${UPGRADE_MOUNT} \
                         /usr/sbin/seal-system -f -r ${ROOT_DEV} >&2
@@ -488,9 +522,9 @@ seal_system() {
                     umount_upgrade_compat
                     do_cmd lvremove -f /dev/xenclient/upgradecompat >&2
                 else
-                    # Update config.pcrs in case it has changed
+                    # Update luks.pcrs in case it has changed
                     do_cmd chroot ${DOM0_MOUNT} \
-                        sh -c '. /usr/lib/openxt/ml-functions ; write_config_pcrs' >&2
+                        sh -c '. /usr/lib/openxt/ml-functions ; write_luks_pcrs' >&2
                     do_cmd /etc/init.d/trousers stop >&2
                     do_cmd chroot ${DOM0_MOUNT} \
                         /usr/sbin/seal-system -f -r ${ROOT_DEV} >&2
@@ -500,7 +534,8 @@ seal_system() {
                 do_umount_all ${DOM0_MOUNT}
 
                 return 0
-            fi
+             fi
+          fi
 
             do_umount_all ${DOM0_MOUNT}
             return 1
@@ -522,7 +557,7 @@ mount_dom0()
     do_mount -o bind /dev ${DOM0_MOUNT}/dev &&
     do_mount -t tmpfs -o $tmpfsopts tmpfs ${DOM0_MOUNT}/tmp &&
     do_mount /dev/xenclient/boot ${DOM0_MOUNT}/boot/system &&
-    do_mount -o user_xattr /dev/xenclient/storage ${DOM0_MOUNT}/storage &&
+ 
     if grep -qs "^securityfs " /proc/mounts ; then
         do_mount -o bind /sys/kernel/security ${DOM0_MOUNT}/sys/kernel/security ||
             return 1
@@ -580,6 +615,38 @@ mount_upgrade_compat()
         do_mount -o bind /sys/fs/selinux ${UPGRADE_MOUNT}/sys/fs/selinux ||
             return 1
     fi
+}
+
+mount_storage()
+{
+    # mount /storage in the proper place if we can, bind it if already mounted
+    if is_mounted /storage ; then
+        echo "mount_storage: /storage mounted, binding to ${DOM0_MOUNT}/storage" >&2
+        do_mount -o bind /storage ${DOM0_MOUNT}/storage
+        return $?
+    elif [ -e /dev/mapper/storage ]; then
+        echo "mount_storage: storage partition is already mapped, mounting" >&2
+    elif [ ! "${EXISTING_MEASURED_STATE}" = "true" ]; then
+        echo "mount_storage: not sealed, not luksOpen-ed, using platform key to mount ..." >&2
+        platform_unlock "/dev/xenclient/storage" storage >&2
+        if [ $? -eq 0 ]; then
+            echo "mount_storage: storage mapped successfully, mounting" >&2
+        else
+            echo "mount_storage: ERROR luksOpen-ing /dev/xenclient/storage" >&2
+            return 1
+        fi
+    else # not already mounted, mapped and platform state is sealed
+        recovery_unlock "/dev/xenclient/storage" storage "${DOM0_MOUNT}" >&2
+        if [ $? -eq 0 ]; then
+            echo "mount_storage: storage mapped successfully, mounting" >&2
+        else
+            echo "mount_storage: ERROR luksOpen-ing /dev/xenclient/storage" >&2
+            return 1
+        fi
+    fi
+
+    # Return value of this command is return value for function
+    do_mount /dev/mapper/storage ${DOM0_MOUNT}/storage
 }
 
 mount_config()
@@ -642,6 +709,12 @@ remove_efi_boot_entries()
         entry=${entry#Boot}
         do_cmd efibootmgr -B -b $entry >&2
     done
+    echo "Removing any existing PBA bootloader entries" >&2
+    for entry in $( efibootmgr | awk '/ PBA|CIPHERDRIVE/ { print $1 }' ); do
+        entry=${entry%\*}
+        entry=${entry#Boot}
+        do_cmd efibootmgr -B -b $entry >&2
+    done
 }
 
 create_efi_boot_entries()
@@ -649,6 +722,11 @@ create_efi_boot_entries()
     local DEVNODE="$1"
     local DISK_DEV="$(get_devnode_disk ${DEVNODE})"
     local PART="$(get_devnode_partition ${DEVNODE})"
+    if [ "$2" != "" ]; then
+	    local DEVNODE3="$2"
+	    local DISK_DEV3="$(get_devnode_disk ${DEVNODE3})"
+	    local PART3="$(get_devnode_partition ${DEVNODE3})"
+    fi
 
     remove_efi_boot_entries
 
@@ -681,7 +759,14 @@ create_efi_boot_entries()
         echo "Couldn't create EFI boot entry" >&2
         return 1
     fi
-
+     
+    if [ "$2" != "" ]; then
+	    do_cmd efibootmgr -w -L "CIPHERDRIVE" -l "\EFI\BOOT\BOOTx64.EFI" -c -d ${DISK_DEV3} --part ${PART3} >&2
+	    if [ "$?" != "0" ]; then
+	        echo "Couldn't create CIPHERDRIVE boot entry" >&2
+	        return 1
+	    fi
+    fi
 
     # Remove duplicate entries (if any)
     do_cmd efibootmgr -D >&2
@@ -700,7 +785,7 @@ copy_to_esp()
         local disk="/dev/${TARGET_DISK}"
     fi
 
-    local ESP=$(sfdisk -l -q "${disk}" | grep "EFI System" | awk '{ print $1 }')
+    local ESP=$(sfdisk -l -q "${disk}" | grep "EFI System" | awk '{ print $1 }'| grep 1 )
     if [ "${ESP}" == "" ]; then
         echo "No EFI System Partition on disk ${DISK_DEV}" >&2
         if [ -d /sys/firmware/efi/efivars ]; then
@@ -708,6 +793,12 @@ copy_to_esp()
         else
             return 0
         fi
+    fi
+    local PBA_NUM=$(sgdisk -p "${disk}" | grep "PBA_CODE" | awk '{ print $1 }')
+    if [ -n "${PBA_NUM}" ]; then
+    	local PBA="${disk}${PBA_NUM}"
+    else
+        PBA=""
     fi
 
     do_mount ${ESP} ${ESP_MOUNT} >&2
@@ -754,7 +845,11 @@ copy_to_esp()
     do_cmd umount ${ESP_MOUNT} >&2
 
     if [ "${INSTALL_MODE}" = "fresh" ] && [ -d /sys/firmware/efi/efivars ]; then
-        create_efi_boot_entries ${ESP}
+    if [ "${PBA}" == "" ]; then
+        create_efi_boot_entries ${ESP} 
+    else
+        create_efi_boot_entries ${ESP} ${PBA}
+    fi
         return $?
     fi
 
@@ -772,6 +867,10 @@ install_uivm()
     local UIVM_SWAP_SIZE_IN_MB="256"
     local UIVM_DISK_SIZE_IN_MB="500"
     local UIVM_DIR=`dirname ${UIVM_VHD}.new`
+    mount_storage || return 1
+        if is_mounted ${DOM0_MOUNT}/storage; then
+            echo "mount_dom0: ${DOM0_MOUNT}/storage is mounted" >&2
+        fi
 
     do_cmd mkdir -p ${UIVM_DIR} >&2 || return 1
 

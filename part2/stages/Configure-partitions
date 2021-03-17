@@ -1,4 +1,4 @@
-#!/bin/ash
+#!/bin/ash -vx
 #
 # Copyright (c) 2013 Citrix Systems, Inc.
 # 
@@ -19,6 +19,7 @@
 
 . ${SCRIPT_DIR}/functions
 
+. ${PBA_CONF}
 . ${DISK_CONF}
 # ^^^ defines ${TARGET_DISK}
 
@@ -34,7 +35,11 @@ scan_partitions()
 
     # We don't want to list the first 2 partitions in our primary partitions as it
     # is reserved for our ESP and BIOS Boot Partition
-    N=3
+    if [ "${INSTALL_PBA}" = "true" ] ; then
+        N=5
+    else
+        N=3
+    fi
     while [ $N -lt $((NUM_PARTITIONS+1)) ] ; do
         PRIMARY_PARTITIONS="${PRIMARY_PARTITIONS} ${TARGET_DISK}/${N}"
         N=$((N+1))
@@ -43,7 +48,16 @@ scan_partitions()
     # If we can't find any existing partitions, then the only one
     # we care about is partition #3, our first real partition
     if [ -z ${PRIMARY_PARTITIONS} ] ; then
-        PRIMARY_PARTITIONS="${TARGET_DISK}/3"
+	
+        if [ "${INSTALL_PBA}" = "true" ] ; then
+            PRIMARY_PARTITIONS="${TARGET_DISK}/5"
+	else
+            PRIMARY_PARTITIONS="${TARGET_DISK}/3"
+        fi
+    fi
+    
+    if [ "${INSTALL_PBA}" = "true" ] ; then
+        PBA_PARTITION="${TARGET_DISK}/3"
     fi
 
     EXISTING_PARTITIONS=
@@ -480,6 +494,7 @@ write_partition_conf()
     echo "REMOVE_PARTITIONS='${REMOVE_PARTITIONS}'" >> ${PARTITION_CONF}
     echo "CREATE_XC_PARTITION='${CREATE_XC_PARTITION}'" >> ${PARTITION_CONF}
     echo "XC_PARTITION='${XC_PARTITION}'" >> ${PARTITION_CONF}
+    echo "PBA_PARTITION='${PBA_PARTITION}'" >> ${PARTITION_CONF}
 }
 
 partition_in_list()

@@ -1,4 +1,4 @@
-#!/bin/ash
+#!/bin/ash -vx
 #
 # Copyright (c) 2013 Citrix Systems, Inc.
 # 
@@ -21,7 +21,8 @@
 . "${SCRIPT_DIR}/Functions/install-main"
 
 . ${INSTALL_MODE_CONF}
-
+MLE_FUNC=/usr/lib/openxt/ml-functions
+[ ! -r ${MLE_FUNC} ] || . ${MLE_FUNC}
 [ ! -r ${MEASURED_LAUNCH_CONF} ] || . ${MEASURED_LAUNCH_CONF}
 
 if [ -z "${PACKAGES_DIR}" ] ; then

@@ -1,4 +1,4 @@
-#!/bin/ash
+#!/bin/ash 
 #
 # Copyright (c) 2014 Citrix Systems, Inc.
 # 
@@ -49,6 +49,7 @@ PARTITION_CONF="${INSTALL_DATA}/partition.conf"
 VHD_CONF="${INSTALL_DATA}/vhd.conf"
 VM_CONF="${INSTALL_DATA}/vm.conf"
 GPT_CONF="${INSTALL_DATA}/gpt.conf"
+PBA_CONF="${INSTALL_DATA}/pba.conf"
 PRESERVED_DATA_CONF="${INSTALL_DATA}/preserved-data.conf"
 EXISTING_CONF="${INSTALL_DATA}/existing-install.conf"
 UIVM_GCONF_VHD_KEY="${INSTALL_DATA}/uivm-gconf,aes-xts-plain,256.key"
@@ -75,6 +76,7 @@ UPGRADE_MOUNT="${MOUNT_ROOT}/upgrade"
 
 # Directory used to mount new ESP filesystem:
 ESP_MOUNT="${MOUNT_ROOT}/esp"
+PBA_MOUNT="${MOUNT_ROOT}/pba"
 
 # Directory used to mount existing dom0 filesystem:
 EXISTING_DOM0_MOUNT="${MOUNT_ROOT}/dom0-existing"
@@ -89,6 +91,7 @@ TEMP_DEV_MOUNT="${MOUNT_ROOT}/dev-temp"
 TEMP_NFS_MOUNT="${MOUNT_ROOT}/nfs-temp"
 TEMP_ROOTFS_MOUNT="${MOUNT_ROOT}/rootfs-temp"
 TEMP_CONFIG_MOUNT="${MOUNT_ROOT}/config-temp"
+TEMP_STORAGE_MOUNT="${MOUNT_ROOT}/storage-temp"
 
 UIVM_VHD="${DOM0_MOUNT}/storage/uivm/uivm.vhd"
 UIVM_GCONF_VHD="${DOM0_MOUNT}/storage/uivm/uivm-gconf.vhd"
